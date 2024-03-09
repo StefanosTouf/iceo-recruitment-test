@@ -100,9 +100,7 @@ final class TransactionStream[F[_]](
 
         for {
           tx <- makeTransaction
-
-          _ <- tx match {
-            // TODO: Make this log more useful
+          _  <- tx match {
             case None => logger.warn(s"Dropped invalid transation")
             case Some(transaction) =>
               // parameters for order update

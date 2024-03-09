@@ -95,42 +95,45 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
         }
       }
 
-      // "T3: process a case where the same message is delivered twice" in { fxt =>
-      //   val ts = Instant.now
-      //   val order = OrderRow(
-      //     orderId = "example_id",
-      //     market = "btc_eur",
-      //     total = 0.8,
-      //     filled = 0,
-      //     createdAt = ts,
-      //     updatedAt = ts
-      //   )
+      "T3: process a case where the same message is delivered twice" in { fxt =>
+        val ts = Instant.now
+        val order = OrderRow(
+          orderId = "example_id",
+          market = "btc_eur",
+          total = 0.8,
+          filled = 0,
+          createdAt = ts,
+          updatedAt = ts
+        )
 
-      //   val update = order.copy(filled = 0.5)
+        val update = order.copy(filled = 0.5)
 
-      //   val test = getResources(fxt, 100.millis).use { case Resources(stream, getO, getT, insertO, _) =>
-      //     for {
-      //       // establish state
-      //       _ <- stream.addNewOrder(order, insertO)
-      //       // run the stream and process the update
-      //       streamFiber <- stream.stream.compile.drain.start
-      //       // deliver the same update twice
-      //       _       <- stream.publish(update)
-      //       _       <- stream.publish(update)
-      //       _       <- IO.sleep(3.seconds)
-      //       _       <- streamFiber.cancel
-      //       results <- getResults(stream, getO, getT)
-      //     } yield results
-      //   }
-      //   test.map { case Result(counter, orders, transactions) =>
-      //     val updated = orders.find(_.orderId == order.orderId).value
-      //     val txn     = transactions.find(_.orderId == order.orderId).value
+        val test = getResources(fxt, 100.millis).use { case Resources(stream, getO, getT, insertO, _) =>
+          for {
+            // establish state
+            _ <- stream.addNewOrder(order, insertO)
+            // run the stream and process the update
+            streamFiber <- stream.stream.compile.drain.start
+            // deliver the same update twice
+            _       <- stream.publish(update)
+            _       <- stream.publish(update)
+            _       <- IO.sleep(3.seconds)
+            _       <- streamFiber.cancel
+            results <- getResults(stream, getO, getT)
+          } yield results
+        }
+        test.map { case Result(counter, orders, transactions) =>
+          val updated = orders.find(_.orderId == order.orderId).value
+          val txn     = transactions.find(_.orderId == order.orderId).value
 
-      //     counter shouldBe 2
-      //     updated.filled shouldBe 0.5
-      //     txn.amount shouldBe 0.5
-      //   }
-      // }
+          // This was originally two, I think that's wrong
+          // Counter being 2 would mean that the duplicate message produces a transaction,
+          // which by definition will have an amount of 0. That should not happen.
+          counter shouldBe 1
+          updated.filled shouldBe 0.5
+          txn.amount shouldBe 0.5
+        }
+      }
 
       "T4: process two updates resulting in two transactions" in { fxt =>
         val ts = Instant.now
