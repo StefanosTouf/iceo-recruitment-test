@@ -12,12 +12,21 @@ case class TransactionRow(
 
 object TransactionRow {
 
-  def apply(state: OrderRow, updated: OrderRow): TransactionRow = {
-    TransactionRow(
-      id = UUID.randomUUID(), // generate some id for our transaction
-      orderId = state.orderId,
-      amount = state.filled,
-      createdAt = Instant.now()
-    )
+  def apply(state: OrderRow, updated: OrderRow): Option[TransactionRow] = {
+    val amount =
+      updated.filled - state.filled
+
+    // from README: All transactions must have positive (greater than zero) amount
+    if (amount > 0)
+      Some(
+        TransactionRow(
+          id = UUID.randomUUID(), // generate some id for our transaction
+          orderId = state.orderId,
+          amount = updated.filled - state.filled,
+          createdAt = Instant.now()
+        )
+      )
+    else
+      None
   }
 }

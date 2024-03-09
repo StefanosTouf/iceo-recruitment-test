@@ -38,16 +38,27 @@ final class TransactionStream[F[_]](
         for {
           // Get current known order state
           state <- stateManager.getOrderState(updatedOrder, queries)
-          transaction = TransactionRow(state = state, updated = updatedOrder)
-          // parameters for order update
-          params = state.filled *: state.orderId *: EmptyTuple
-          // update order with params
-          _ <- queries.updateOrder.execute(params)
-          // insert the transaction
-          _ <- queries.insertTransaction.execute(transaction)
-          _ <- performLongRunningOperation(transaction).value.void.handleErrorWith(th =>
-                 logger.error(th)(s"Got error when performing long running IO!")
-               )
+          _ <- TransactionRow(state = state, updated = updatedOrder) match {
+            // TODO: Log ignored transaction
+            case None => F.unit // Ignore invalid transaction
+            case Some(transaction) =>
+              // parameters for order update
+              // We know that updatedOrder.orderId == state.orderId
+              val params =
+                updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+
+              for {
+                // Perform long running operation first since its success is a prerequisite for a state update
+                _ <- performLongRunningOperation(transaction).value.void.onError(th =>
+                      logger.error(th)(s"Got error when performing long running IO!")
+                    )
+                // update order with params
+                _ <- queries.updateOrder.execute(params)
+                // insert the transaction
+                _ <- queries.insertTransaction.execute(transaction)
+              } yield ()
+          }
+
         } yield ()
       }
   }
