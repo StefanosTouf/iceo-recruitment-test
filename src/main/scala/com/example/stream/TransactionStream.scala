@@ -1,7 +1,7 @@
 package com.example.stream
 
 import cats.data.EitherT
-import cats.effect.{Ref, Resource}
+import cats.effect.{Ref, Resource, Concurrent}
 import cats.effect.kernel.Async
 import cats.effect.std.Queue
 import fs2.Stream
@@ -14,21 +14,58 @@ import skunk._
 import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.duration.DurationInt
 import cats.instances.queue
+import cats.MonadThrow
+
+final class Exchange[F[_]](
+  orderTopics: Vector[Queue[F, Option[OrderRow]]]
+)(implicit F: MonadThrow[F]) {
+  def topicCount: Int =
+    orderTopics.length
+
+  def publish(order: OrderRow): F[Unit] = {
+    val queueIdx: Int =
+      Math.abs(order.orderId.hashCode() % topicCount)
+
+    orderTopics.get(queueIdx) match {
+      case None => F.raiseError(new RuntimeException(s"Queue index out of bounds, should be impossible: $queueIdx"))
+      case Some(value) => value.offer(Some(order))
+    }
+  }
+
+  def getStreams: Stream[F, Stream[F, OrderRow]] =
+    Stream.iterable(orderTopics.map(q => Stream.fromQueueNoneTerminated(q)))
+
+  def signalTermination: F[Unit] =
+    orderTopics.traverse_(_.offer(None))
+}
+
+object Exchange {
+  def apply[F[_]: Concurrent](topicsCount: Int): F[Exchange[F]] = {
+    val queues: F[Vector[Queue[F,Option[OrderRow]]]] =
+      Vector
+        .fill(topicsCount)(Queue.unbounded[F, Option[OrderRow]])
+        .sequence
+
+    queues.map(new Exchange[F](_))
+  }
+
+}
 
 // All SQL queries inside the Queries object are correct and should not be changed
 final class TransactionStream[F[_]](
   operationTimer: FiniteDuration,
   acceptableUpdateStaleness: FiniteDuration,
-  orders: Queue[F, Option[OrderRow]],
+  orders: Exchange[F],
   session: Resource[F, Session[F]],
   transactionCounter: Ref[F, Int], // updated if long IO succeeds
   stateManager: StateManager[F]    // utility for state management
 )(implicit F: Async[F], logger: Logger[F]) {
 
   def stream: Stream[F, Unit] = {
-    Stream
-      .fromQueueNoneTerminated(orders)
-      .evalMap(order => F.uncancelable(_ => processUpdate(order))) // TODO: uncancelable looks dangerous here
+    orders
+      .getStreams
+      .map(_.evalMap(order => F.uncancelable(_ => processUpdate(order)))) // TODO: uncancelable looks dangerous here
+      .parJoin(orders.topicCount)
   }
 
   // Application should shut down on error,
@@ -60,8 +97,8 @@ final class TransactionStream[F[_]](
           tx <- makeTransaction
 
           _ <- tx match {
-            // TODO: Log ignored transaction
-            case None => F.unit // Ignore invalid/stale transaction
+            // TODO: Make this log more useful
+            case None => logger.warn(s"Dropped invalid transation")
             case Some(transaction) =>
               // parameters for order update
               // We know that updatedOrder.orderId == state.orderId
@@ -103,11 +140,11 @@ final class TransactionStream[F[_]](
   }
 
   // helper methods for testing
-  def publish(update: OrderRow): F[Unit]                                          = orders.offer(Some(update))
+  def publish(update: OrderRow): F[Unit]                                          = orders.publish(update)
   def getCounter: F[Int]                                                          = transactionCounter.get
   def setSwitch(value: Boolean): F[Unit]                                          = stateManager.setSwitch(value)
   def addNewOrder(order: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = stateManager.add(order, insert)
-  def runRemainder: F[Unit]                                                       = orders.offer(None) >> stream.compile.drain
+  def runRemainder: F[Unit]                                                       = orders.signalTermination >> stream.compile.drain
   // helper methods for testing
 }
 
@@ -116,17 +153,18 @@ object TransactionStream {
   def apply[F[_]: Async: Logger](
     operationTimer: FiniteDuration,
     session: Resource[F, Session[F]],
-    acceptableUpdateStaleness: FiniteDuration = 5.seconds
+    acceptableUpdateStaleness: FiniteDuration = 5.seconds,
+    maxConcurrent: Int = 10
   ): Resource[F, TransactionStream[F]] = {
     Resource.make {
       for {
         counter      <- Ref.of(0)
-        queue        <- Queue.unbounded[F, Option[OrderRow]]
+        exchange     <- Exchange(maxConcurrent)
         stateManager <- StateManager.apply
       } yield new TransactionStream[F](
         operationTimer,
         acceptableUpdateStaleness,
-        queue,
+        exchange,
         session,
         counter,
         stateManager

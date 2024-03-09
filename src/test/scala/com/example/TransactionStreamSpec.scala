@@ -415,8 +415,60 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
           txn.map(_.amount).sum shouldBe 0.8
         }
       }
+
+      "T11: Concurrently process 20 orders with 2 transactions each" in { fxt =>
+        val ts = Instant.now
+
+        def makeOrder(i: Int, total: Double, filled: Double) =
+          OrderRow(
+            orderId = s"example_id_$i",
+            market = s"market_$i",
+            total = total,
+            filled = filled,
+            createdAt = ts,
+            updatedAt = ts
+          )
+
+        val initialOrders: List[OrderRow] =
+          List.range(0, 20).map(makeOrder(_, 0.8, 0))
+
+        val firstUpdates: List[OrderRow] =
+          initialOrders.map(_.copy(filled = 0.5))
+
+        val secondUpdates: List[OrderRow] =
+          initialOrders.map(_.copy(filled = 0.8))
+
+
+        val test = getResources(fxt, 100.millis).use { case Resources(stream, getO, getT, insertO, _) =>
+          for {
+            // establish state for all orders
+            _           <- initialOrders.traverse(o => stream.addNewOrder(o, insertO))
+            streamFiber <- stream.stream.compile.drain.start
+            // Send updates for all orders in batches
+            _       <- firstUpdates.traverse(stream.publish(_))
+            _       <- secondUpdates.traverse(stream.publish(_))
+            _       <- IO.sleep(5.seconds)
+            _       <- streamFiber.cancel
+            results <- getResults(stream, getO, getT)
+          } yield results
+        }
+        test.map { case Result(counter, orders, transactions) =>
+          counter shouldBe 40
+
+          orders foreach { updated =>
+            updated.filled shouldBe 0.8
+          }
+
+          transactions.groupBy(_.orderId).foreach { case (str, txs) =>
+            txs.size shouldBe 2
+            txs.map(_.amount).sum shouldBe 0.8
+          }
+        }
+      }
+
     }
   }
+
 
   // timer for long IO operation
   def getResources(
