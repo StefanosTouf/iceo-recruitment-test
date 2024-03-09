@@ -15,6 +15,7 @@ import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.duration.DurationInt
 import cats.instances.queue
 import cats.MonadThrow
+import cats.effect.kernel.Clock
 
 final class Exchange[F[_]](
   orderTopics: Vector[Queue[F, Option[OrderRow]]]
@@ -76,15 +77,19 @@ final class TransactionStream[F[_]](
     PreparedQueries(session)
       .use { queries =>
         // Get current known order state
-        val getState: F[Option[OrderRow]] =
+        val getState: F[OrderRow] =
           stateManager.getOrderState(updatedOrder, queries)
 
-        // TODO: Info log when waiting for state
-        val getOrWaitForState: F[Option[OrderRow]] =
-          getState >>= {
-            case None        => F.sleep(acceptableUpdateStaleness) >> getState
-            case Some(state) => F.pure(Option(state))
-          }
+        def getOrWaitForState: F[Option[OrderRow]] = {
+          // This is not perfect because it will wait for more than 5 seconds in total
+          // since there will be some latency introduced by the getState effect's run time
+          // Also we probably want a more frequent retry, this should be optimised
+          Stream
+            .retry(getState, 1.second, identity, 5)
+            .compile
+            .last
+            .handleErrorWith(_ => F.pure(None))
+        }
 
         val makeTransaction: F[Option[TransactionRow]] =
           for {

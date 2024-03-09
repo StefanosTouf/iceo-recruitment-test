@@ -11,8 +11,8 @@ import fs2.concurrent.SignallingRef
 //This can be used by other components, for example a stream that performs order placement will use add method
 final class StateManager[F[_]: Async](ioSwitch: SignallingRef[F, Boolean]) {
 
-  def getOrderState(order: OrderRow, queries: PreparedQueries[F]): F[Option[OrderRow]] = {
-    queries.getOrder.option(order.orderId)
+  def getOrderState(order: OrderRow, queries: PreparedQueries[F]): F[OrderRow] = {
+    queries.getOrder.unique(order.orderId)
   }
 
   def add(row: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = {
