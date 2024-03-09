@@ -30,7 +30,8 @@ final class TransactionStream[F[_]](
   def stream: Stream[F, Unit] = {
     orders
       .getStreams
-      .map(_.evalMap(order => F.uncancelable(_ => processUpdate(order)))) // TODO: uncancelable looks dangerous here
+      // Use uncancellable to always finish processing the current update, even on stream shutdown
+      .map(_.evalMap(order => F.uncancelable(_ => processUpdate(order))))
       .parJoin(orders.topicCount)
   }
 
@@ -65,29 +66,26 @@ final class TransactionStream[F[_]](
           } yield maybeTx
 
 
-        for {
-          tx <- makeTransaction
-          _  <- tx match {
-            case None => logger.warn(s"Dropped invalid transation")
-            case Some(transaction) =>
-              // parameters for order update
-              // We know that updatedOrder.orderId == state.orderId
-              val params =
-                updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+        makeTransaction >>= {
+          case None =>
+            logger.warn(s"Dropped invalid transation for order ${updatedOrder.orderId}")
+          case Some(transaction) =>
+            // parameters for order update
+            // We know that updatedOrder.orderId == state.orderId
+            val params =
+              updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
 
-              for {
-                // Perform long running operation first since its success is a prerequisite for a state update
-                _ <- performLongRunningOperation(transaction).value.void.onError(th =>
-                      logger.error(th)(s"Got error when performing long running IO!")
-                    )
-                // update order with params
-                _ <- queries.updateOrder.execute(params)
-                // insert the transaction
-                _ <- queries.insertTransaction.execute(transaction)
-              } yield ()
-          }
-
-        } yield ()
+            for {
+              // Perform long running operation first since its success is a prerequisite for a state update
+              _ <- performLongRunningOperation(transaction).value.void.onError(th =>
+                    logger.error(th)(s"Got error when performing long running IO!")
+                  )
+              // update order with params
+              _ <- queries.updateOrder.execute(params)
+              // insert the transaction
+              _ <- queries.insertTransaction.execute(transaction)
+            } yield ()
+        }
       }
   }
 
