@@ -12,11 +12,12 @@ import com.example.persistence.PreparedQueries
 import skunk._
 
 import scala.concurrent.duration.FiniteDuration
+import cats.instances.queue
 
 // All SQL queries inside the Queries object are correct and should not be changed
 final class TransactionStream[F[_]](
   operationTimer: FiniteDuration,
-  orders: Queue[F, OrderRow],
+  orders: Queue[F, Option[OrderRow]],
   session: Resource[F, Session[F]],
   transactionCounter: Ref[F, Int], // updated if long IO succeeds
   stateManager: StateManager[F]    // utility for state management
@@ -24,8 +25,8 @@ final class TransactionStream[F[_]](
 
   def stream: Stream[F, Unit] = {
     Stream
-      .fromQueueUnterminated(orders)
-      .evalMap(processUpdate)
+      .fromQueueNoneTerminated(orders)
+      .evalMap(order => F.uncancelable(_ => processUpdate(order))) // TODO: uncancelable looks dangerous here
   }
 
   // Application should shut down on error,
@@ -82,10 +83,11 @@ final class TransactionStream[F[_]](
   }
 
   // helper methods for testing
-  def publish(update: OrderRow): F[Unit]                                          = orders.offer(update)
+  def publish(update: OrderRow): F[Unit]                                          = orders.offer(Some(update))
   def getCounter: F[Int]                                                          = transactionCounter.get
   def setSwitch(value: Boolean): F[Unit]                                          = stateManager.setSwitch(value)
   def addNewOrder(order: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = stateManager.add(order, insert)
+  def runRemainder: F[Unit]                                                       = orders.offer(None) >> stream.compile.drain
   // helper methods for testing
 }
 
@@ -95,10 +97,10 @@ object TransactionStream {
     operationTimer: FiniteDuration,
     session: Resource[F, Session[F]]
   ): Resource[F, TransactionStream[F]] = {
-    Resource.eval {
+    Resource.make {
       for {
         counter      <- Ref.of(0)
-        queue        <- Queue.unbounded[F, OrderRow]
+        queue        <- Queue.unbounded[F, Option[OrderRow]]
         stateManager <- StateManager.apply
       } yield new TransactionStream[F](
         operationTimer,
@@ -107,6 +109,6 @@ object TransactionStream {
         counter,
         stateManager
       )
-    }
+    }{ txStream => txStream.runRemainder }
   }
 }
