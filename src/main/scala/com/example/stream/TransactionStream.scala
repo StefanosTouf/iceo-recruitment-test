@@ -12,11 +12,13 @@ import com.example.persistence.PreparedQueries
 import skunk._
 
 import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.DurationInt
 import cats.instances.queue
 
 // All SQL queries inside the Queries object are correct and should not be changed
 final class TransactionStream[F[_]](
   operationTimer: FiniteDuration,
+  acceptableUpdateStaleness: FiniteDuration,
   orders: Queue[F, Option[OrderRow]],
   session: Resource[F, Session[F]],
   transactionCounter: Ref[F, Int], // updated if long IO succeeds
@@ -36,12 +38,30 @@ final class TransactionStream[F[_]](
   private def processUpdate(updatedOrder: OrderRow): F[Unit] = {
     PreparedQueries(session)
       .use { queries =>
+        // Get current known order state
+        val getState: F[Option[OrderRow]] =
+          stateManager.getOrderState(updatedOrder, queries)
+
+        // TODO: Info log when waiting for state
+        val getOrWaitForState: F[Option[OrderRow]] =
+          getState >>= {
+            case None        => F.sleep(acceptableUpdateStaleness) >> getState
+            case Some(state) => F.pure(Option(state))
+          }
+
+        val makeTransaction: F[Option[TransactionRow]] =
+          for {
+            maybeState <- getOrWaitForState
+            maybeTx    =  maybeState >>= (TransactionRow(_, updatedOrder))
+          } yield maybeTx
+
+
         for {
-          // Get current known order state
-          state <- stateManager.getOrderState(updatedOrder, queries)
-          _ <- TransactionRow(state = state, updated = updatedOrder) match {
+          tx <- makeTransaction
+
+          _ <- tx match {
             // TODO: Log ignored transaction
-            case None => F.unit // Ignore invalid transaction
+            case None => F.unit // Ignore invalid/stale transaction
             case Some(transaction) =>
               // parameters for order update
               // We know that updatedOrder.orderId == state.orderId
@@ -95,7 +115,8 @@ object TransactionStream {
 
   def apply[F[_]: Async: Logger](
     operationTimer: FiniteDuration,
-    session: Resource[F, Session[F]]
+    session: Resource[F, Session[F]],
+    acceptableUpdateStaleness: FiniteDuration = 5.seconds
   ): Resource[F, TransactionStream[F]] = {
     Resource.make {
       for {
@@ -104,6 +125,7 @@ object TransactionStream {
         stateManager <- StateManager.apply
       } yield new TransactionStream[F](
         operationTimer,
+        acceptableUpdateStaleness,
         queue,
         session,
         counter,

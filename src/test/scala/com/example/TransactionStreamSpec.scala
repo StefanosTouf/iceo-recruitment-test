@@ -340,43 +340,43 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
           }
       }
 
-      // // Hint: we can drop the update if it is older than 5 seconds and we don't have it in the state.
-      // "T9: handle race condition where update arrives before addition to the state" in { fxt =>
-      //   val ts = Instant.now
-      //   val order = OrderRow(
-      //     orderId = "example_id",
-      //     market = "btc_eur",
-      //     total = 0.8,
-      //     filled = 0,
-      //     createdAt = ts,
-      //     updatedAt = ts
-      //   )
+      // Hint: we can drop the update if it is older than 5 seconds and we don't have it in the state.
+      "T9: handle race condition where update arrives before addition to the state" in { fxt =>
+        val ts = Instant.now
+        val order = OrderRow(
+          orderId = "example_id",
+          market = "btc_eur",
+          total = 0.8,
+          filled = 0,
+          createdAt = ts,
+          updatedAt = ts
+        )
 
-      //   val firstUpdate = order.copy(filled = 0.8)
+        val firstUpdate = order.copy(filled = 0.8)
 
-      //   val test = getResources(fxt, 100.millis).use { case Resources(stream, getO, getT, insertO, _) =>
-      //     for {
-      //       // start the stream
-      //       streamFiber <- stream.stream.compile.drain.start
-      //       // publish first update
-      //       _ <- stream.publish(firstUpdate)
-      //       _ <- IO.sleep(1.second)
-      //       // establish state and wait for processing
-      //       _       <- stream.addNewOrder(order, insertO)
-      //       _       <- IO.sleep(7.seconds)
-      //       _       <- streamFiber.cancel
-      //       results <- getResults(stream, getO, getT)
-      //     } yield results
-      //   }
-      //   test.map { case Result(counter, orders, transactions) =>
-      //     val updated = orders.find(_.orderId == order.orderId).value
-      //     val txn     = transactions.find(_.orderId == order.orderId).value
+        val test = getResources(fxt, 100.millis).use { case Resources(stream, getO, getT, insertO, _) =>
+          for {
+            // start the stream
+            streamFiber <- stream.stream.compile.drain.start
+            // publish first update
+            _ <- stream.publish(firstUpdate)
+            _ <- IO.sleep(1.second)
+            // establish state and wait for processing
+            _       <- stream.addNewOrder(order, insertO)
+            _       <- IO.sleep(7.seconds)
+            _       <- streamFiber.cancel
+            results <- getResults(stream, getO, getT)
+          } yield results
+        }
+        test.map { case Result(counter, orders, transactions) =>
+          val updated = orders.find(_.orderId == order.orderId).value
+          val txn     = transactions.find(_.orderId == order.orderId).value
 
-      //     counter shouldBe 1
-      //     updated.filled shouldBe 0.8
-      //     txn.amount shouldBe 0.8
-      //   }
-      // }
+          counter shouldBe 1
+          updated.filled shouldBe 0.8
+          txn.amount shouldBe 0.8
+        }
+      }
 
       // "T10: handle race condition where bigger update arrives first" in { fxt =>
       //   val ts = Instant.now
