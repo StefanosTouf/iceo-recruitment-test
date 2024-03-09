@@ -30,7 +30,7 @@ object Main extends IOApp.Simple {
 
       val streams = for {
         _      <- Resource.eval(FlywayMigration.migrate(databaseConfig))
-        stream <- TransactionStream(1.second, pool.sessionResource)
+        stream <- TransactionStream(1.second, pool.sessionResource, 5.seconds, 100)
       } yield new Streams(stream)
 
       streams.use(_.run)

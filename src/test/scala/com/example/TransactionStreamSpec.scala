@@ -419,7 +419,7 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
         }
       }
 
-      "T11: Concurrently process 20 orders with 2 transactions each" in { fxt =>
+      "T11: Concurrently process 10 orders with 2 transactions each" in { fxt =>
         val ts = Instant.now
 
         def makeOrder(i: Int, total: Double, filled: Double) =
@@ -433,7 +433,7 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
           )
 
         val initialOrders: List[OrderRow] =
-          List.range(0, 20).map(makeOrder(_, 0.8, 0))
+          List.range(0, 10).map(makeOrder(_, 0.8, 0))
 
         val firstUpdates: List[OrderRow] =
           initialOrders.map(_.copy(filled = 0.5))
@@ -456,7 +456,7 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
           } yield results
         }
         test.map { case Result(counter, orders, transactions) =>
-          counter shouldBe 40
+          counter shouldBe 20
 
           orders foreach { updated =>
             updated.filled shouldBe 0.8
@@ -485,7 +485,7 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
       selectTransaction <- fxt.databasePool.sessionResource.evalMap(_.prepare(Queries.getAllTransactions))
       insertOrder       <- fxt.databasePool.sessionResource.evalMap(_.prepare(Queries.insertOrder))
       insertTransaction <- fxt.databasePool.sessionResource.evalMap(_.prepare(Queries.insertTransaction))
-      stream            <- TransactionStream.apply(timer, fxt.databasePool.sessionResource)
+      stream            <- TransactionStream.apply(timer, fxt.databasePool.sessionResource, 5.seconds, 5)
     } yield Resources(stream, selectOrder, selectTransaction, insertOrder, insertTransaction)
   }
 

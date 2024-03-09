@@ -17,41 +17,6 @@ import cats.instances.queue
 import cats.MonadThrow
 import cats.effect.kernel.Clock
 
-final class Exchange[F[_]](
-  orderTopics: Vector[Queue[F, Option[OrderRow]]]
-)(implicit F: MonadThrow[F]) {
-  def topicCount: Int =
-    orderTopics.length
-
-  def publish(order: OrderRow): F[Unit] = {
-    val queueIdx: Int =
-      Math.abs(order.orderId.hashCode() % topicCount)
-
-    orderTopics.get(queueIdx) match {
-      case None => F.raiseError(new RuntimeException(s"Queue index out of bounds, should be impossible: $queueIdx"))
-      case Some(value) => value.offer(Some(order))
-    }
-  }
-
-  def getStreams: Stream[F, Stream[F, OrderRow]] =
-    Stream.iterable(orderTopics.map(q => Stream.fromQueueNoneTerminated(q)))
-
-  def signalTermination: F[Unit] =
-    orderTopics.traverse_(_.offer(None))
-}
-
-object Exchange {
-  def apply[F[_]: Concurrent](topicsCount: Int): F[Exchange[F]] = {
-    val queues: F[Vector[Queue[F,Option[OrderRow]]]] =
-      Vector
-        .fill(topicsCount)(Queue.unbounded[F, Option[OrderRow]])
-        .sequence
-
-    queues.map(new Exchange[F](_))
-  }
-
-}
-
 // All SQL queries inside the Queries object are correct and should not be changed
 final class TransactionStream[F[_]](
   operationTimer: FiniteDuration,
@@ -76,24 +41,26 @@ final class TransactionStream[F[_]](
   private def processUpdate(updatedOrder: OrderRow): F[Unit] = {
     PreparedQueries(session)
       .use { queries =>
-        // Get current known order state
-        val getState: F[OrderRow] =
-          stateManager.getOrderState(updatedOrder, queries)
+        // Attempts to get the stored state and retries every 250 millis, but gives up if it has not succeeded after the acceptable staleness.
+        // Returns a None if state could not be retrieved
+        def getState: F[Option[OrderRow]] = {
+          def retry: F[Option[OrderRow]] =
+            stateManager.getOrderState(updatedOrder, queries) >>= {
+              case Some(order) => F.pure(Some(order))
+              case None        => F.delay(250.millis) >> retry
+            }
 
-        def getOrWaitForState: F[Option[OrderRow]] = {
-          // This is not perfect because it will wait for more than 5 seconds in total
-          // since there will be some latency introduced by the getState effect's run time
-          // Also we probably want a more frequent retry, this should be optimised
-          Stream
-            .retry(getState, 1.second, identity, 5)
-            .compile
-            .last
-            .handleErrorWith(_ => F.pure(None))
+          val noneOnTimeout: F[Option[OrderRow]] =
+            F.sleep(acceptableUpdateStaleness).map(_ => Option.empty[OrderRow])
+
+          F.race(retry, noneOnTimeout)
+           .map(_.fold(identity, identity))
         }
 
+        // Produces a None if it cannot find the state for the update or if the transaction is invalid (ie. amount <= 0)
         val makeTransaction: F[Option[TransactionRow]] =
           for {
-            maybeState <- getOrWaitForState
+            maybeState <- getState
             maybeTx    =  maybeState >>= (TransactionRow(_, updatedOrder))
           } yield maybeTx
 
@@ -156,8 +123,8 @@ object TransactionStream {
   def apply[F[_]: Async: Logger](
     operationTimer: FiniteDuration,
     session: Resource[F, Session[F]],
-    acceptableUpdateStaleness: FiniteDuration = 5.seconds,
-    maxConcurrent: Int = 10
+    acceptableUpdateStaleness: FiniteDuration,
+    maxConcurrent: Int
   ): Resource[F, TransactionStream[F]] = {
     Resource.make {
       for {
