@@ -441,7 +441,6 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
         val secondUpdates: List[OrderRow] =
           initialOrders.map(_.copy(filled = 0.8))
 
-
         val test = getResources(fxt, 100.millis).use { case Resources(stream, getO, getT, insertO, _) =>
           for {
             // establish state for all orders
@@ -471,7 +470,6 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
 
     }
   }
-
 
   // timer for long IO operation
   def getResources(

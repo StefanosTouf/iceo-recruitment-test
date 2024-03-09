@@ -28,8 +28,7 @@ final class TransactionStream[F[_]](
 )(implicit F: Async[F], logger: Logger[F]) {
 
   def stream: Stream[F, Unit] = {
-    orders
-      .getStreams
+    orders.getStreams
       // Use uncancellable to always finish processing the current update, even on stream shutdown
       .map(_.evalMap(order => F.uncancelable(_ => processUpdate(order))))
       .parJoin(orders.topicCount)
@@ -42,7 +41,8 @@ final class TransactionStream[F[_]](
   private def processUpdate(updatedOrder: OrderRow): F[Unit] = {
     PreparedQueries(session)
       .use { queries =>
-        // Attempts to get the stored state and retries every 250 millis, but gives up if it has not succeeded after the acceptable staleness.
+        // Attempts to get the stored state and retries every 250 millis, but gives up if it has not succeeded after the
+        // acceptable staleness.
         // Returns a None if state could not be retrieved
         def getState: F[Option[OrderRow]] = {
           def retry: F[Option[OrderRow]] =
@@ -62,9 +62,8 @@ final class TransactionStream[F[_]](
         val makeTransaction: F[Option[TransactionRow]] =
           for {
             maybeState <- getState
-            maybeTx    =  maybeState >>= (TransactionRow(_, updatedOrder))
+            maybeTx = maybeState >>= (TransactionRow(_, updatedOrder))
           } yield maybeTx
-
 
         makeTransaction >>= {
           case None =>
@@ -78,8 +77,8 @@ final class TransactionStream[F[_]](
             for {
               // Perform long running operation first since its success is a prerequisite for a state update
               _ <- performLongRunningOperation(transaction).value.void.onError(th =>
-                    logger.error(th)(s"Got error when performing long running IO!")
-                  )
+                     logger.error(th)(s"Got error when performing long running IO!")
+                   )
               // update order with params
               _ <- queries.updateOrder.execute(params)
               // insert the transaction
@@ -137,6 +136,6 @@ object TransactionStream {
         counter,
         stateManager
       )
-    }{ txStream => txStream.runRemainder }
+    } { txStream => txStream.runRemainder }
   }
 }
